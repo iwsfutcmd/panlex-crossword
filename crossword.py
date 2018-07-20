@@ -10,6 +10,24 @@ import json
 # from grapheme_clusters import Gstr
 from grapheme import graphemes
 
+TRANS_QUERY = """
+select 
+    expr.txt, 
+    denotationsrc.expr as trans_expr, 
+    exprsrc.txt as trans_txt, 
+    grp_quality_score(array_agg(denotation.grp), array_agg(denotation.quality)) as trans_quality 
+    from expr 
+    inner join denotationx as denotation on denotation.expr = expr.id 
+    inner join 
+        denotationx as denotationsrc on denotationsrc.meaning = denotation.meaning and 
+        denotationsrc.expr != denotation.expr inner join expr as exprsrc on exprsrc.id = denotationsrc.expr 
+        where expr.langvar = uid_langvar(%s) and 
+        denotationsrc.expr in (select expr.id from expr where expr.langvar = uid_langvar(%s) and 
+        expr.txt = any(%s)) 
+        group by expr.id, denotationsrc.expr, exprsrc.txt 
+        order by trans_quality desc
+"""
+
 puz.ENCODING = "UTF-8"
 class Crossword(object):
     def __init__(self, rows, cols, empty=' ', available_words=[]):
@@ -163,20 +181,17 @@ def get_exprs(uid, limit=1000):
 def prep_string(string):
     return list(graphemes(re.sub(r"\s", "", string.upper())))
 
+def prep_string_Arab(string):
+    g = list(graphemes(re.sub(r"\s", "", string)))
+    return [g[0] + "\u200d"] + ["\u200d" + c + "\u200d" for c in g[1:-1]] + ["\u200d" + g[1]]
+
 def get_expr_trans(trans_uid, uid, limit=1000, sample=100, numtrans=3):
     ex_list = get_exprs(trans_uid, limit)
     ex_de = random.sample(ex_list, sample)
-    tr = panlex.query_all("/expr", {
-        "trans_uid": trans_uid, 
-        "uid": uid, 
-        "include": ["trans_quality", "trans_txt"], 
-        "sort": "trans_quality desc", 
-        "trans_txt": ex_de
-        })
+    tr = query(TRANS_QUERY, (trans_uid, uid, ex_de))
     tr_dict = defaultdict(list)
-    for r in tr["result"]:
-        tr_dict[r["trans_txt"]].append(r["txt"])
-    # wl = [[prep_string(ex), " — ".join(tr_dict[ex][:numtrans])] for ex in ex_de]
+    for r in tr:
+        tr_dict[r.trans_txt].append(r.txt)
     wl = [[prep_string(ex), " - ".join(tr_dict[ex][:numtrans])] for ex in ex_de]
     return wl
 
@@ -186,8 +201,11 @@ def gen_puzzle(puz_uid, hint_uid, size=(30, 30), limit=1000, sample=100, numtran
     c.compute_crossword()
     return c
 
-def gen_puzzle2(puz_uid, size=(30, 30), limit=1000):
+def gen_puzzle2(puz_uid, size=(30, 30), limit=1000, script="Zyyy"):
     exprs = get_exprs(puz_uid, limit)
+    # if script == "Arab":
+    #     wl = [[prep_string_Arab(expr), expr] for expr in exprs]
+    # else:
     wl = [[prep_string(expr), expr] for expr in exprs]
     c = Crossword(size[0], size[1], "", wl)
     c.compute_crossword()
@@ -196,20 +214,32 @@ def gen_puzzle2(puz_uid, size=(30, 30), limit=1000):
 def translate_clues(crossword, puz_uid, clue_uid, numtrans=3):
     wl = crossword.best_wordlist
     ex_de = [clue[1] for clue in wl]
-    tr = panlex.query_all("/expr", {
-        "trans_uid": puz_uid, 
-        "uid": clue_uid, 
-        "include": ["trans_quality", "trans_txt"], 
-        "sort": "trans_quality desc", 
-        "trans_txt": ex_de
-    })
+    # tr = panlex.query_all("/expr", {
+    #     "trans_uid": puz_uid, 
+    #     "uid": clue_uid, 
+    #     "include": ["trans_quality", "trans_txt"], 
+    #     "sort": "trans_quality desc", 
+    #     "trans_txt": ex_de
+    # })
+    tr = query(TRANS_QUERY, (clue_uid, puz_uid, ex_de))
     tr_dict = defaultdict(list)
-    for r in tr["result"]:
-        tr_dict[r["trans_txt"]].append(r["txt"])
+    for r in tr:
+        tr_dict[r.trans_txt].append(r.txt)
     for clue in wl:
         clue[1] = " - ".join(tr_dict[clue[1]][:numtrans])
     crossword.best_wordlist = wl
     return crossword
+
+def get_script(uid):
+    query_string = """
+        SELECT txt FROM expr WHERE expr.id = 
+            (SELECT langvar.script_expr
+             FROM langvar
+             WHERE langvar.id = uid_langvar(%s))
+    """
+    return query(query_string, (uid,))[0].txt
+
+             
 
 def grid_to_solution(grid):
     return "".join(["".join(r).replace(" ", ".") for r in grid])
@@ -232,16 +262,19 @@ def make_puz(puz_uid, hint_uid, size=(30, 30), limit=1000, sample=100, numtrans=
     p = crossword_to_puz(c)
     p.save("PanLex_{}_{}.puz".format(puz_uid, hint_uid))
 
-def make_json(puz_uid, hint_uid, size=(30, 30), limit=1000, sample=100, numtrans=3, rtl=False):
-    # c = gen_puzzle(puz_uid, hint_uid, size, limit, sample, numtrans)
-    c = translate_clues(gen_puzzle2(puz_uid, size, limit), puz_uid, hint_uid, numtrans)
+def make_json(puz_uid, hint_uid, size=(30, 30), limit=1000, sample=100, numtrans=3):
+    script = get_script(puz_uid)
+    if script == "Arab":
+        rtl = True
+    else:
+        rtl = False
+    c = translate_clues(gen_puzzle2(puz_uid, size, limit, script), puz_uid, hint_uid, numtrans)
     grid = []
     for row in c.best_grid:
         new_row = [cell if cell != " " else "" for cell in row]
         if rtl: new_row = new_row[::-1]
         grid.append(new_row)
     wl = []
-    # wl = sorted(c.best_wordlist, key=lambda x: (x[4], x[2], x[3]))
     for clue in sorted(c.best_wordlist, key=lambda x: (x[4], x[2], x[3])):
         new_clue = clue[:]
         if rtl:
