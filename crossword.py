@@ -8,7 +8,9 @@ import unicodedata2 as unicodedata
 import puz
 import json
 # from grapheme_clusters import Gstr
+
 from grapheme import graphemes
+from icu import Script
 
 TRANS_QUERY = """
 select 
@@ -264,10 +266,7 @@ def make_puz(puz_uid, hint_uid, size=(30, 30), limit=1000, sample=100, numtrans=
 
 def make_json(puz_uid, hint_uid, size=(30, 30), limit=1000, sample=100, numtrans=3):
     script = get_script(puz_uid)
-    if script == "Arab":
-        rtl = True
-    else:
-        rtl = False
+    rtl = Script(Script.getCode(script)[0]).isRightToLeft()
     c = translate_clues(gen_puzzle2(puz_uid, size, limit, script), puz_uid, hint_uid, numtrans)
     grid = []
     for row in c.best_grid:
