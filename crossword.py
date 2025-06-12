@@ -1,16 +1,16 @@
 import random, time
 from operator import itemgetter
 from collections import defaultdict
-from ben.panlex_db import query
-import panlex
+# from ben.panlex_db import query
+# import panlex
 import regex as re
-import unicodedata2 as unicodedata
+# import unicodedata2 as unicodedata
 import puz
 import json
 # from grapheme_clusters import Gstr
 
 from grapheme import graphemes
-from icu import Script
+# from icu import Script
 
 TRANS_QUERY = """
 select 
